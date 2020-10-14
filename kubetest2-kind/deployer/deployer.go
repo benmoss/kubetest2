@@ -37,7 +37,7 @@ const Name = "kind"
 // New implements deployer.New for kind
 func New(opts types.Options) (types.Deployer, *pflag.FlagSet) {
 	// create a deployer object and set fields that are not flag controlled
-	d := &deployer{
+	d := &Deployer{
 		commonOptions: opts,
 		logsDir:       filepath.Join(opts.ArtifactsDir(), "logs"),
 	}
@@ -48,13 +48,13 @@ func New(opts types.Options) (types.Deployer, *pflag.FlagSet) {
 // assert that New implements types.NewDeployer
 var _ types.NewDeployer = New
 
-// TODO(bentheelder): finish implementing this stubbed-out deployer
-type deployer struct {
+// TODO(bentheelder): finish implementing this stubbed-out Deployer
+type Deployer struct {
 	// generic parts
 	commonOptions types.Options
 	// kind specific details
 	nodeImage      string // name of the node image built / deployed
-	clusterName    string // --name flag value for kind
+	ClusterName    string // --name flag value for kind
 	logLevel       string // log level for kind commands
 	logsDir        string // dir to export logs to
 	buildType      string // --type flag to kind build node-image
@@ -64,7 +64,7 @@ type deployer struct {
 	verbosity      int    // --verbosity for kind
 }
 
-func (d *deployer) Kubeconfig() (string, error) {
+func (d *Deployer) Kubeconfig() (string, error) {
 	if d.kubeconfigPath != "" {
 		return d.kubeconfigPath, nil
 	}
@@ -76,10 +76,10 @@ func (d *deployer) Kubeconfig() (string, error) {
 }
 
 // helper used to create & bind a flagset to the deployer
-func bindFlags(d *deployer) *pflag.FlagSet {
+func bindFlags(d *Deployer) *pflag.FlagSet {
 	flags := pflag.NewFlagSet(Name, pflag.ContinueOnError)
 	flags.StringVar(
-		&d.clusterName, "cluster-name", "kind-kubetest2", "the kind cluster --name",
+		&d.ClusterName, "cluster-name", "kind-kubetest2", "the kind cluster --name",
 	)
 	flags.StringVar(
 		&d.logLevel, "loglevel", "", "--loglevel for kind commands",
@@ -106,14 +106,14 @@ func bindFlags(d *deployer) *pflag.FlagSet {
 }
 
 // assert that deployer implements types.DeployerWithKubeconfig
-var _ types.DeployerWithKubeconfig = &deployer{}
+var _ types.DeployerWithKubeconfig = &Deployer{}
 
 // Deployer implementation methods below
 
-func (d *deployer) Up() error {
+func (d *Deployer) Up() error {
 	args := []string{
 		"create", "cluster",
-		"--name", d.clusterName,
+		"--name", d.ClusterName,
 	}
 	if d.logLevel != "" {
 		args = append(args, "--loglevel", d.logLevel)
@@ -142,10 +142,10 @@ func (d *deployer) Up() error {
 	return process.ExecJUnit("kind", args, os.Environ())
 }
 
-func (d *deployer) Down() error {
+func (d *Deployer) Down() error {
 	args := []string{
 		"delete", "cluster",
-		"--name", d.clusterName,
+		"--name", d.ClusterName,
 	}
 	if d.logLevel != "" {
 		args = append(args, "--loglevel", d.logLevel)
@@ -156,7 +156,7 @@ func (d *deployer) Down() error {
 	return process.ExecJUnit("kind", args, os.Environ())
 }
 
-func (d *deployer) IsUp() (up bool, err error) {
+func (d *Deployer) IsUp() (up bool, err error) {
 	// naively assume that if the api server reports nodes, the cluster is up
 	lines, err := exec.CombinedOutputLines(
 		exec.Command("kubectl", "get", "nodes", "-o=name"),
@@ -167,10 +167,10 @@ func (d *deployer) IsUp() (up bool, err error) {
 	return len(lines) > 0, nil
 }
 
-func (d *deployer) DumpClusterLogs() error {
+func (d *Deployer) DumpClusterLogs() error {
 	args := []string{
 		"export", "logs",
-		"--name", d.clusterName,
+		"--name", d.ClusterName,
 		d.logsDir,
 	}
 	if d.logLevel != "" {
@@ -182,7 +182,7 @@ func (d *deployer) DumpClusterLogs() error {
 	return process.ExecJUnit("kind", args, os.Environ())
 }
 
-func (d *deployer) Build() error {
+func (d *Deployer) Build() error {
 	// TODO(bentheelder): build type should be configurable
 	args := []string{
 		"build", "node-image",

@@ -18,12 +18,14 @@ limitations under the License.
 package deployer
 
 import (
+	"bytes"
+	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"path"
 
 	"github.com/spf13/pflag"
-
 	kinddeployer "sigs.k8s.io/kubetest2/kubetest2-kind/deployer"
 	"sigs.k8s.io/kubetest2/pkg/process"
 	"sigs.k8s.io/kubetest2/pkg/types"
@@ -53,18 +55,38 @@ type deployer struct {
 	commonOptions types.Options
 	kind          *kinddeployer.Deployer
 	// capi specific details
-	provider          string
-	kubernetesVersion string
-	controlPlaneCount string
-	workerCount       string
+	provider           string
+	kubernetesVersion  string
+	controlPlaneCount  string
+	workerCount        string
+	flavor             string
+	useExistingCluster bool
+	kubecfgPath        string
 }
 
 func (d *deployer) Kubeconfig() (string, error) {
-	home, err := os.UserHomeDir()
+	if d.kubecfgPath != "" {
+		return d.kubecfgPath, nil
+	}
+
+	tmpdir, err := ioutil.TempDir("", "kubetest2-capi")
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".kube", "config"), nil
+	d.kubecfgPath = path.Join(tmpdir, "kubeconfig.yaml")
+	args := []string{
+		"get", "kubeconfig", d.kind.ClusterName,
+	}
+	clusterctl := exec.Command("clusterctl", args...)
+	lines, err := clusterctl.Output()
+	if err != nil {
+		return "", err
+	}
+	if err := ioutil.WriteFile(d.kubecfgPath, lines, 0600); err != nil {
+		return "", err
+	}
+
+	return d.kubecfgPath, nil
 }
 
 // helper used to create & bind a flagset to the deployer
@@ -81,6 +103,12 @@ func bindFlags(d *deployer, flags *pflag.FlagSet) {
 	flags.StringVar(
 		&d.workerCount, "worker-machine-count", "1", "--worker-machine-count flag for clusterctl",
 	)
+	flags.StringVar(
+		&d.flavor, "flavor", "", "--flavor flag for clusterctl",
+	)
+	flags.BoolVar(
+		&d.useExistingCluster, "use-existing-cluster", false, "use the existing, currently targeted cluster as the management cluster",
+	)
 }
 
 // assert that deployer implements types.DeployerWithKubeconfig
@@ -89,30 +117,46 @@ var _ types.DeployerWithKubeconfig = &deployer{}
 // Deployer implementation methods below
 
 func (d *deployer) Up() error {
-	if err := d.kind.Up(); err != nil {
-		return err
+	if !d.useExistingCluster {
+		if err := d.kind.Up(); err != nil {
+			return err
+		}
 	}
 
 	println("Up(): installing Cluster API...\n")
-	args := []string{"init", "--infrastructure", d.provider}
-	if err := process.ExecJUnit("clusterctl", args, os.Environ()); err != nil {
-		return err
+	args := []string{"get", "providers", "--all-namespaces", fmt.Sprintf("--field-selector=metadata.name=infrastructure-%s", d.provider), "--ignore-not-found"}
+	kubectl := exec.Command("kubectl", args...)
+	lines, err := kubectl.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if !bytes.Contains(exitErr.Stderr, []byte("the server doesn't have a resource type")) {
+				return fmt.Errorf("error stdout: %q, stderr: %q, err: %w", string(lines), string(exitErr.Stderr), err)
+			}
+		} else {
+			return err
+		}
 	}
+	if len(lines) == 0 { // no results
+		args = []string{"init", "--infrastructure", d.provider}
+		if err := process.ExecJUnit("clusterctl", args, os.Environ()); err != nil {
+			return err
+		}
+	}
+
 	println("waiting for CAPI to start")
-	args = []string{"-n", "capi-system", "wait", "--for=condition=Available", "deployment/capi-controller-manager", "--timeout=10m"}
-	if err := process.ExecJUnit("kubectl", args, os.Environ()); err != nil {
-		return err
-	}
-	args = []string{"-n", "capi-webhook-system", "wait", "--for=condition=Available", "deployment/capi-controller-manager", "--timeout=10m"}
+	args = []string{"wait", "--for=condition=Available", "--all", "--all-namespaces", "deployment", "--timeout=10m"}
 	if err := process.ExecJUnit("kubectl", args, os.Environ()); err != nil {
 		return err
 	}
 
-	args = []string{"config", "cluster", d.kind.ClusterName,
+	args = []string{
+		"config",
+		"cluster", d.kind.ClusterName,
 		"--infrastructure", d.provider,
 		"--kubernetes-version", d.kubernetesVersion,
 		"--worker-machine-count", d.workerCount,
 		"--control-plane-machine-count", d.controlPlaneCount,
+		"--flavor", d.flavor,
 	}
 
 	clusterctl := exec.Command("clusterctl", args...)
@@ -122,7 +166,7 @@ func (d *deployer) Up() error {
 		return err
 	}
 
-	kubectl := exec.Command("kubectl", "apply", "-f", "-")
+	kubectl = exec.Command("kubectl", "apply", "-f", "-")
 	kubectl.Stdin = stdout
 	kubectl.Stdout = os.Stdout
 	kubectl.Stderr = os.Stderr

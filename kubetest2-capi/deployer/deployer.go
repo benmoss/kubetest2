@@ -19,11 +19,13 @@ package deployer
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
+	"time"
 
 	"github.com/spf13/pflag"
 	kinddeployer "sigs.k8s.io/kubetest2/kubetest2-kind/deployer"
@@ -62,6 +64,7 @@ type deployer struct {
 	flavor             string
 	useExistingCluster bool
 	kubecfgPath        string
+	upTimeout          string
 }
 
 func (d *deployer) Kubeconfig() (string, error) {
@@ -109,6 +112,9 @@ func bindFlags(d *deployer, flags *pflag.FlagSet) {
 	flags.BoolVar(
 		&d.useExistingCluster, "use-existing-cluster", false, "use the existing, currently targeted cluster as the management cluster",
 	)
+	flags.StringVar(
+		&d.upTimeout, "up-timeout", "30m", "maximum time allotted for the --up command to complete",
+	)
 }
 
 // assert that deployer implements types.DeployerWithKubeconfig
@@ -117,6 +123,13 @@ var _ types.DeployerWithKubeconfig = &deployer{}
 // Deployer implementation methods below
 
 func (d *deployer) Up() error {
+	upTimeout, err := time.ParseDuration(d.upTimeout)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), upTimeout)
+	defer cancel()
+
 	if !d.useExistingCluster {
 		if err := d.kind.Up(); err != nil {
 			return err
@@ -125,7 +138,7 @@ func (d *deployer) Up() error {
 
 	println("Up(): installing Cluster API...\n")
 	args := []string{"get", "providers", "--all-namespaces", fmt.Sprintf("--field-selector=metadata.name=infrastructure-%s", d.provider), "--ignore-not-found"}
-	kubectl := exec.Command("kubectl", args...)
+	kubectl := exec.CommandContext(ctx, "kubectl", args...)
 	lines, err := kubectl.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -138,14 +151,14 @@ func (d *deployer) Up() error {
 	}
 	if len(lines) == 0 { // no results
 		args = []string{"init", "--infrastructure", d.provider}
-		if err := process.ExecJUnit("clusterctl", args, os.Environ()); err != nil {
+		if err := process.ExecJUnitContext(ctx, "clusterctl", args, os.Environ()); err != nil {
 			return err
 		}
 	}
 
 	println("waiting for CAPI to start")
-	args = []string{"wait", "--for=condition=Available", "--all", "--all-namespaces", "deployment", "--timeout=10m"}
-	if err := process.ExecJUnit("kubectl", args, os.Environ()); err != nil {
+	args = []string{"wait", "--for=condition=Available", "--all", "--all-namespaces", "deployment", "--timeout=-1m"}
+	if err := process.ExecJUnitContext(ctx, "kubectl", args, os.Environ()); err != nil {
 		return err
 	}
 
@@ -159,14 +172,14 @@ func (d *deployer) Up() error {
 		"--flavor", d.flavor,
 	}
 
-	clusterctl := exec.Command("clusterctl", args...)
+	clusterctl := exec.CommandContext(ctx, "clusterctl", args...)
 	clusterctl.Stderr = os.Stderr
 	stdout, err := clusterctl.StdoutPipe()
 	if err != nil {
 		return err
 	}
 
-	kubectl = exec.Command("kubectl", "apply", "-f", "-")
+	kubectl = exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
 	kubectl.Stdin = stdout
 	kubectl.Stdout = os.Stdout
 	kubectl.Stderr = os.Stderr
@@ -185,8 +198,8 @@ func (d *deployer) Up() error {
 	}
 
 	println("waiting for cluster to become ready")
-	args = []string{"wait", "--for=condition=Ready", "cluster/" + d.kind.ClusterName, "--timeout=30m"}
-	if err := process.ExecJUnit("kubectl", args, os.Environ()); err != nil {
+	args = []string{"wait", "--for=condition=Ready", "cluster/" + d.kind.ClusterName, "--timeout=-1m"}
+	if err := process.ExecJUnitContext(ctx, "kubectl", args, os.Environ()); err != nil {
 		return err
 	}
 
@@ -194,6 +207,11 @@ func (d *deployer) Up() error {
 }
 
 func (d *deployer) Down() error {
+	args := []string{"delete", "--ignore-not-found", "--wait", "cluster", d.kind.ClusterName}
+	if err := process.ExecJUnit("kubectl", args, os.Environ()); err != nil {
+		return err
+	}
+
 	return d.kind.Down()
 }
 

@@ -63,7 +63,7 @@ type deployer struct {
 	workerCount         string
 	flavor              string
 	useExistingCluster  bool
-	installCalico       bool
+	cniManifest         string
 	kubecfgPath         string
 	upTimeout           string
 	workloadClusterName string
@@ -117,8 +117,8 @@ func bindFlags(d *deployer, flags *pflag.FlagSet) {
 	flags.StringVar(
 		&d.upTimeout, "up-timeout", "30m", "maximum time allotted for the --up command to complete",
 	)
-	flags.BoolVar(
-		&d.installCalico, "install-calico", false, "automatically install the Calico CNI when the cluster becomes available",
+	flags.StringVar(
+		&d.cniManifest, "cni-manifest", "", "automatically install this CNI manifest when the cluster becomes available",
 	)
 	flags.StringVar(
 		&d.workloadClusterName, "workload-cluster-name", "capi-workload-cluster", "the workload cluster name",
@@ -144,7 +144,7 @@ func (d *deployer) Up() error {
 		}
 	}
 
-	println("Up(): installing Cluster API...\n")
+	println("Up: installing Cluster API\n")
 	args := []string{"get", "providers", "--all-namespaces", fmt.Sprintf("--field-selector=metadata.name=infrastructure-%s", d.provider), "--ignore-not-found"}
 	kubectl := exec.CommandContext(ctx, "kubectl", args...)
 	lines, err := kubectl.Output()
@@ -164,7 +164,7 @@ func (d *deployer) Up() error {
 		}
 	}
 
-	println("waiting for CAPI to start")
+	println("Up: waiting for CAPI to start\n")
 	args = []string{"wait", "--for=condition=Available", "--all", "--all-namespaces", "deployment", "--timeout=-1m"}
 	if err := process.ExecJUnitContext(ctx, "kubectl", args, os.Environ()); err != nil {
 		return err
@@ -205,17 +205,18 @@ func (d *deployer) Up() error {
 		return err
 	}
 
-	println("waiting for cluster to become ready")
+	println("Up: waiting for cluster to become ready\n")
 	args = []string{"wait", "--for=condition=Ready", "cluster/" + d.workloadClusterName, "--timeout=-1m"}
 	if err := process.ExecJUnitContext(ctx, "kubectl", args, os.Environ()); err != nil {
 		return err
 	}
-	if d.installCalico {
+	if d.cniManifest != "" {
+		println("Up: installing Calico CNI\n")
 		kubeconfig, err := d.Kubeconfig()
 		if err != nil {
 			return err
 		}
-		args = []string{"--kubeconfig", kubeconfig, "apply", "-f", "https://docs.projectcalico.org/v3.12/manifests/calico.yaml"}
+		args = []string{"--kubeconfig", kubeconfig, "apply", "-f", d.cniManifest}
 		if err := process.ExecJUnitContext(ctx, "kubectl", args, os.Environ()); err != nil {
 			return err
 		}
@@ -229,6 +230,7 @@ func (d *deployer) Up() error {
 }
 
 func (d *deployer) Down() error {
+	println("Down: deleting workload cluster...\n")
 	args := []string{"delete", "--ignore-not-found", "--wait", "cluster", d.workloadClusterName}
 	if err := process.ExecJUnit("kubectl", args, os.Environ()); err != nil {
 		return err
@@ -237,14 +239,14 @@ func (d *deployer) Down() error {
 	return d.kind.Down()
 }
 
-func (d *deployer) IsUp() (up bool, err error) {
-	return d.kind.IsUp()
+func (d *deployer) IsUp() (bool, error) {
+	panic("Not implemented")
 }
 
 func (d *deployer) DumpClusterLogs() error {
-	return d.kind.DumpClusterLogs()
+	panic("Not implemented")
 }
 
 func (d *deployer) Build() error {
-	return d.kind.Build()
+	panic("Not implemented")
 }

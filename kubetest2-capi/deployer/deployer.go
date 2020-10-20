@@ -229,7 +229,7 @@ func (d *deployer) Up() error {
 }
 
 func (d *deployer) Down() error {
-	args := []string{"delete", "--ignore-not-found", "--wait", "cluster", d.kind.ClusterName}
+	args := []string{"delete", "--ignore-not-found", "--wait", "cluster", d.workloadClusterName}
 	if err := process.ExecJUnit("kubectl", args, os.Environ()); err != nil {
 		return err
 	}

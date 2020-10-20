@@ -57,14 +57,16 @@ type deployer struct {
 	commonOptions types.Options
 	kind          *kinddeployer.Deployer
 	// capi specific details
-	provider           string
-	kubernetesVersion  string
-	controlPlaneCount  string
-	workerCount        string
-	flavor             string
-	useExistingCluster bool
-	kubecfgPath        string
-	upTimeout          string
+	provider            string
+	kubernetesVersion   string
+	controlPlaneCount   string
+	workerCount         string
+	flavor              string
+	useExistingCluster  bool
+	installCalico       bool
+	kubecfgPath         string
+	upTimeout           string
+	workloadClusterName string
 }
 
 func (d *deployer) Kubeconfig() (string, error) {
@@ -78,7 +80,7 @@ func (d *deployer) Kubeconfig() (string, error) {
 	}
 	d.kubecfgPath = path.Join(tmpdir, "kubeconfig.yaml")
 	args := []string{
-		"get", "kubeconfig", d.kind.ClusterName,
+		"get", "kubeconfig", d.workloadClusterName,
 	}
 	clusterctl := exec.Command("clusterctl", args...)
 	lines, err := clusterctl.Output()
@@ -114,6 +116,12 @@ func bindFlags(d *deployer, flags *pflag.FlagSet) {
 	)
 	flags.StringVar(
 		&d.upTimeout, "up-timeout", "30m", "maximum time allotted for the --up command to complete",
+	)
+	flags.BoolVar(
+		&d.installCalico, "install-calico", false, "automatically install the Calico CNI when the cluster becomes available",
+	)
+	flags.StringVar(
+		&d.workloadClusterName, "workload-cluster-name", "capi-workload-cluster", "the workload cluster name",
 	)
 }
 
@@ -164,7 +172,7 @@ func (d *deployer) Up() error {
 
 	args = []string{
 		"config",
-		"cluster", d.kind.ClusterName,
+		"cluster", d.workloadClusterName,
 		"--infrastructure", d.provider,
 		"--kubernetes-version", d.kubernetesVersion,
 		"--worker-machine-count", d.workerCount,
@@ -198,9 +206,23 @@ func (d *deployer) Up() error {
 	}
 
 	println("waiting for cluster to become ready")
-	args = []string{"wait", "--for=condition=Ready", "cluster/" + d.kind.ClusterName, "--timeout=-1m"}
+	args = []string{"wait", "--for=condition=Ready", "cluster/" + d.workloadClusterName, "--timeout=-1m"}
 	if err := process.ExecJUnitContext(ctx, "kubectl", args, os.Environ()); err != nil {
 		return err
+	}
+	if d.installCalico {
+		kubeconfig, err := d.Kubeconfig()
+		if err != nil {
+			return err
+		}
+		args = []string{"--kubeconfig", kubeconfig, "apply", "-f", "https://docs.projectcalico.org/v3.12/manifests/calico.yaml"}
+		if err := process.ExecJUnitContext(ctx, "kubectl", args, os.Environ()); err != nil {
+			return err
+		}
+		args = []string{"--kubeconfig", kubeconfig, "wait", "--for=condition=Available", "--all", "--all-namespaces", "deployment", "--timeout=-1m"}
+		if err := process.ExecJUnitContext(ctx, "kubectl", args, os.Environ()); err != nil {
+			return err
+		}
 	}
 
 	return nil

@@ -18,13 +18,12 @@ limitations under the License.
 package deployer
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -58,6 +57,7 @@ type deployer struct {
 	kind          *kinddeployer.Deployer
 	// capi specific details
 	provider            string
+	initProviders       []string
 	kubernetesVersion   string
 	controlPlaneCount   string
 	workerCount         string
@@ -98,6 +98,9 @@ func (d *deployer) Kubeconfig() (string, error) {
 func bindFlags(d *deployer, flags *pflag.FlagSet) {
 	flags.StringVar(
 		&d.provider, "provider", "", "--provider flag for clusterctl",
+	)
+	flags.StringArrayVar(
+		&d.initProviders, "init-providers", []string{}, "additional --provider arguments for init. will be initialized in addition to the provider set with --provider",
 	)
 	flags.StringVar(
 		&d.kubernetesVersion, "kubernetes-version", "", "--kubernetes-version flag for clusterctl",
@@ -145,23 +148,10 @@ func (d *deployer) Up() error {
 	}
 
 	println("Up: installing Cluster API\n")
-	args := []string{"get", "providers", "--all-namespaces", fmt.Sprintf("--field-selector=metadata.name=infrastructure-%s", d.provider), "--ignore-not-found"}
-	kubectl := exec.CommandContext(ctx, "kubectl", args...)
-	lines, err := kubectl.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			if !bytes.Contains(exitErr.Stderr, []byte("the server doesn't have a resource type")) {
-				return fmt.Errorf("error stdout: %q, stderr: %q, err: %w", string(lines), string(exitErr.Stderr), err)
-			}
-		} else {
-			return err
-		}
-	}
-	if len(lines) == 0 { // no results
-		args = []string{"init", "--infrastructure", d.provider}
-		if err := process.ExecJUnitContext(ctx, "clusterctl", args, os.Environ()); err != nil {
-			return err
-		}
+	initProviders := append(d.initProviders, d.provider)
+	args := []string{"init", "--infrastructure", strings.Join(initProviders, ",")}
+	if err := process.ExecJUnitContext(ctx, "clusterctl", args, os.Environ()); err != nil {
+		return err
 	}
 
 	println("Up: waiting for CAPI to start\n")
@@ -187,7 +177,7 @@ func (d *deployer) Up() error {
 		return err
 	}
 
-	kubectl = exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+	kubectl := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
 	kubectl.Stdin = stdout
 	kubectl.Stdout = os.Stdout
 	kubectl.Stderr = os.Stderr

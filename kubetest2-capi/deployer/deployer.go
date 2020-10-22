@@ -40,7 +40,7 @@ func New(opts types.Options) (types.Deployer, *pflag.FlagSet) {
 	// create a deployer object and set fields that are not flag controlled
 	kind, flags := kinddeployer.New(opts)
 	d := &deployer{
-		kind:          kind.(*kinddeployer.Deployer),
+		kind:          kind,
 		commonOptions: opts,
 	}
 	// register flags and return
@@ -54,7 +54,7 @@ var _ types.NewDeployer = New
 type deployer struct {
 	// generic parts
 	commonOptions types.Options
-	kind          *kinddeployer.Deployer
+	kind          types.Deployer
 	// capi specific details
 	provider            string
 	initProviders       []string

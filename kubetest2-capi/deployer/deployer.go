@@ -238,5 +238,5 @@ func (d *deployer) DumpClusterLogs() error {
 }
 
 func (d *deployer) Build() error {
-	panic("Not implemented")
+	return d.kind.Build()
 }
